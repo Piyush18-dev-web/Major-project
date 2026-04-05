@@ -1,9 +1,5 @@
-1.Python 3.8+
-
-2.OpenCV
-
-3.PyTorch
-
-4.YOLOv5
-
-5.Scikit-learn
+flask==3.0.2
+flask-cors==4.0.0
+opencv-python==4.9.0.80
+ultralytics==8.2.0
+numpy==1.26.4

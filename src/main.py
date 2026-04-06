@@ -41,7 +41,8 @@ from datetime import datetime
 import numpy as np
 from flask import Flask, Response, jsonify, request, send_file, render_template_string
 
--- Optional: import your real modules, fall back to stubs for demo --
+# -- Optional: import your real modules --
+# -----------------------------------------
 
 try:
 from vehicle_detection import VehicleDetector

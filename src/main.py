@@ -151,7 +151,7 @@ Video processing thread
 def processing_loop(video_path: str, detector, predictor):
 global state
 
-cap = cv2.VideoCapture(video_path)  
+cap = cv2.VideoCapture("traffic.mp4")  
 if not cap.isOpened():  
     print(f"[ERROR] Cannot open: {video_path}")  
     return  

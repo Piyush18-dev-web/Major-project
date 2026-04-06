@@ -45,11 +45,11 @@ from flask import Flask, Response, jsonify, request, send_file, render_template_
 # -----------------------------------------
 
 try:
-from vehicle_detection import VehicleDetector
-from congestion_prediction import CongestionPredictor
-REAL_MODULES = True
+    from vehicle_detection import VehicleDetector
+    from congestion_prediction import CongestionPredictor
+    REAL_MODULES = True
 except ImportError:
-REAL_MODULES = False
+    REAL_MODULES = False
 
 # ---------------------------------------------
 

@@ -51,11 +51,11 @@ REAL_MODULES = True
 except ImportError:
 REAL_MODULES = False
 
----------------------------------------------
+# ---------------------------------------------
 
 Stub classes (used when real modules absent)
 
----------------------------------------------
+# ---------------------------------------------
 
 class StubVehicleDetector:
 """Simulates YOLO detections for demo / testing."""
@@ -85,11 +85,11 @@ def predict(self, density):
     if density < 22:  return "HEAVY"  
     return "GRIDLOCK"
 
----------------------------------------------
+# ---------------------------------------------
 
 Global state
 
----------------------------------------------
+# ---------------------------------------------
 
 HISTORY_LEN = 120   # keep last 120 data-points (~2 min at 1 sample/s)
 
@@ -125,11 +125,11 @@ CONGESTION_COLORS = {
 "GRIDLOCK": (0, 0,   220),
 }
 
----------------------------------------------
+# ---------------------------------------------
 
 SSE helpers
 
----------------------------------------------
+# ---------------------------------------------
 
 def broadcast_sse(data: dict):
 payload = "data: " + json.dumps(data) + "\n\n"
@@ -143,11 +143,11 @@ dead.append(q)
 for q in dead:
 sse_clients.remove(q)
 
----------------------------------------------
+# ---------------------------------------------
 
 Video processing thread
 
----------------------------------------------
+# ---------------------------------------------
 
 def processing_loop(video_path: str, detector, predictor):
 global state
@@ -301,11 +301,11 @@ cv2.putText(frame, ts, (w - 120, 60),
 
 return frame
 
----------------------------------------------
+# ---------------------------------------------
 
 Flask app
 
----------------------------------------------
+# ---------------------------------------------
 
 app = Flask(name)
 
@@ -415,21 +415,21 @@ output = io.BytesIO(si.getvalue().encode())
 return send_file(output, mimetype="text/csv",
 as_attachment=True, download_name="traffic_session.csv")
 
----------------------------------------------
+# ---------------------------------------------
 
 Dashboard HTML (embedded)
 
----------------------------------------------
+# ---------------------------------------------
 
 DASHBOARD_HTML = open(os.path.join(os.path.dirname(file), "dashboard.html")).read() \
 if os.path.exists(os.path.join(os.path.dirname(file), "dashboard.html")) \
 else "<h1>dashboard.html not found</h1>"
 
----------------------------------------------
+# ---------------------------------------------
 
 Entry point
 
----------------------------------------------
+# ---------------------------------------------
 
 def main():
 parser = argparse.ArgumentParser()

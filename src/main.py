@@ -1,5 +1,5 @@
 """
-Traffic Monitoring System — Upgraded Backend
+Traffic Monitoring System -- Upgraded Backend
 
 Adds:
 
@@ -41,7 +41,7 @@ from datetime import datetime
 import numpy as np
 from flask import Flask, Response, jsonify, request, send_file, render_template_string
 
-── Optional: import your real modules, fall back to stubs for demo ──
+-- Optional: import your real modules, fall back to stubs for demo --
 
 try:
 from vehicle_detection import VehicleDetector
@@ -50,11 +50,11 @@ REAL_MODULES = True
 except ImportError:
 REAL_MODULES = False
 
-─────────────────────────────────────────────
+---------------------------------------------
 
 Stub classes (used when real modules absent)
 
-─────────────────────────────────────────────
+---------------------------------------------
 
 class StubVehicleDetector:
 """Simulates YOLO detections for demo / testing."""
@@ -84,11 +84,11 @@ def predict(self, density):
     if density < 22:  return "HEAVY"  
     return "GRIDLOCK"
 
-─────────────────────────────────────────────
+---------------------------------------------
 
 Global state
 
-─────────────────────────────────────────────
+---------------------------------------------
 
 HISTORY_LEN = 120   # keep last 120 data-points (~2 min at 1 sample/s)
 
@@ -96,7 +96,7 @@ state = {
 "running":       False,
 "paused":        False,
 "density":       0,
-"congestion":    "—",
+"congestion":    "--",
 "fps":           0.0,
 "frame_count":   0,
 "alerts":        [],
@@ -124,11 +124,11 @@ CONGESTION_COLORS = {
 "GRIDLOCK": (0, 0,   220),
 }
 
-─────────────────────────────────────────────
+---------------------------------------------
 
 SSE helpers
 
-─────────────────────────────────────────────
+---------------------------------------------
 
 def broadcast_sse(data: dict):
 payload = "data: " + json.dumps(data) + "\n\n"
@@ -142,11 +142,11 @@ dead.append(q)
 for q in dead:
 sse_clients.remove(q)
 
-─────────────────────────────────────────────
+---------------------------------------------
 
 Video processing thread
 
-─────────────────────────────────────────────
+---------------------------------------------
 
 def processing_loop(video_path: str, detector, predictor):
 global state
@@ -177,19 +177,19 @@ while state["running"]:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  
         continue  
 
-    # ── Detect ──  
+    # -- Detect --  
     vehicles = detector.detect(frame)  
     density  = len(vehicles)  
 
-    # ── Class breakdown ──  
+    # -- Class breakdown --  
     class_counts = {}  
     for _, _, cls in vehicles:  
         class_counts[cls] = class_counts.get(cls, 0) + 1  
 
-    # ── Congestion ──  
+    # -- Congestion --  
     congestion = predictor.predict(density)  
 
-    # ── FPS ──  
+    # -- FPS --  
     fps_times.append(time.time())  
     if len(fps_times) > 1:  
         fps = len(fps_times) / (fps_times[-1] - fps_times[0])  
@@ -202,19 +202,19 @@ while state["running"]:
     state["fps"]          = round(fps, 1)  
     state["class_counts"] = class_counts  
 
-    # ── Alert ──  
+    # -- Alert --  
     alert_cooldown -= 1  
     if congestion in ("HEAVY", "GRIDLOCK") and alert_cooldown <= 0:  
         alert = {  
             "time": datetime.now().strftime("%H:%M:%S"),  
-            "msg":  f"{congestion} congestion — {density} vehicles",  
+            "msg":  f"{congestion} congestion -- {density} vehicles",  
             "level": congestion,  
         }  
         state["alerts"].insert(0, alert)  
         state["alerts"] = state["alerts"][:20]  
         alert_cooldown = 60  
 
-    # ── Annotate frame ──  
+    # -- Annotate frame --  
     annotated = annotate(frame.copy(), vehicles, density, congestion, fps)  
 
     # Push to MJPEG queue (non-blocking)  
@@ -227,7 +227,7 @@ while state["running"]:
         except Exception:  
             pass  
 
-    # ── History + SSE (throttled) ──  
+    # -- History + SSE (throttled) --  
     now = time.time()  
     if now - last_sample >= 0.5:  
         last_sample = now  
@@ -261,7 +261,7 @@ while state["running"]:
             },  
         })  
 
-    # ── Cap at ~30 FPS for CPU friendliness ──  
+    # -- Cap at ~30 FPS for CPU friendliness --  
     elapsed = time.time() - t0  
     time.sleep(max(0, 1/30 - elapsed))  
 
@@ -300,11 +300,11 @@ cv2.putText(frame, ts, (w - 120, 60),
 
 return frame
 
-─────────────────────────────────────────────
+---------------------------------------------
 
 Flask app
 
-─────────────────────────────────────────────
+---------------------------------------------
 
 app = Flask(name)
 
@@ -414,21 +414,21 @@ output = io.BytesIO(si.getvalue().encode())
 return send_file(output, mimetype="text/csv",
 as_attachment=True, download_name="traffic_session.csv")
 
-─────────────────────────────────────────────
+---------------------------------------------
 
 Dashboard HTML (embedded)
 
-─────────────────────────────────────────────
+---------------------------------------------
 
 DASHBOARD_HTML = open(os.path.join(os.path.dirname(file), "dashboard.html")).read() \
 if os.path.exists(os.path.join(os.path.dirname(file), "dashboard.html")) \
 else "<h1>dashboard.html not found</h1>"
 
-─────────────────────────────────────────────
+---------------------------------------------
 
 Entry point
 
-─────────────────────────────────────────────
+---------------------------------------------
 
 def main():
 parser = argparse.ArgumentParser()
@@ -440,7 +440,7 @@ detector  = VehicleDetector(model_path="yolov8n.pt") if REAL_MODULES else StubVe
 predictor = CongestionPredictor()                     if REAL_MODULES else StubCongestionPredictor()  
 
 mode = "REAL" if REAL_MODULES else "DEMO (stub)"  
-print(f"\n🚦 Traffic Monitor starting — {mode} mode")  
+print(f"\n🚦 Traffic Monitor starting -- {mode} mode")  
 print(f"   Video : {args.video}")  
 print(f"   Dashboard: http://127.0.0.1:{args.port}\n")  
 

@@ -1,4 +1,5 @@
-streamlit
+flask
+flask-cors
 opencv-python-headless
 numpy
-pandas
+ultralytics

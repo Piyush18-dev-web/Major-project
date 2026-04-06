@@ -1,5 +1,5 @@
-flask
-flask-cors
+streamlit
 opencv-python-headless
-ultralytics
 numpy
+pandas
+yt-dlp

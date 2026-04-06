@@ -1,17 +1,44 @@
-import os
+import streamlit as st
 import cv2
 import time
-import json
-import csv
-import queue
-import threading
-import argparse
-import io
+import numpy as np
 from collections import deque
 from datetime import datetime
+import yt_dlp
 
-import numpy as np
-from flask import Flask, Response, jsonify, request, send_file, render_template_string
+st.set_page_config(
+    page_title="Traffic Monitor",
+    page_icon="🚦",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap');
+html, body, [class*="css"] { font-family: 'Rajdhani', sans-serif; background-color: #0a0e1a; color: #e0e6f0; }
+.stApp { background-color: #0a0e1a; }
+.metric-card { background: linear-gradient(135deg, #0f1629 0%, #151d35 100%); border: 1px solid #1e2d50; border-radius: 12px; padding: 20px 24px; text-align: center; box-shadow: 0 4px 24px rgba(0,0,0,0.4); }
+.metric-label { font-family: 'Share Tech Mono', monospace; font-size: 11px; letter-spacing: 2px; color: #4a6fa5; text-transform: uppercase; margin-bottom: 8px; }
+.metric-value { font-family: 'Share Tech Mono', monospace; font-size: 42px; font-weight: 700; line-height: 1; }
+.metric-sub { font-size: 12px; color: #4a6fa5; margin-top: 6px; }
+.badge { display: inline-block; padding: 6px 18px; border-radius: 20px; font-family: 'Share Tech Mono', monospace; font-size: 13px; font-weight: 700; letter-spacing: 2px; }
+.badge-FREE     { background: #0d3320; color: #00dc78; border: 1px solid #00dc78; }
+.badge-LIGHT    { background: #0d2e3a; color: #00c8ff; border: 1px solid #00c8ff; }
+.badge-MODERATE { background: #2a2000; color: #ffc800; border: 1px solid #ffc800; }
+.badge-HEAVY    { background: #2a1000; color: #ff6400; border: 1px solid #ff6400; }
+.badge-GRIDLOCK { background: #2a0000; color: #ff2020; border: 1px solid #ff2020; }
+.alert-item { background: #1a0f0f; border-left: 3px solid #ff4040; border-radius: 6px; padding: 10px 14px; margin-bottom: 8px; font-family: 'Share Tech Mono', monospace; font-size: 12px; color: #ff9090; }
+.section-title { font-family: 'Share Tech Mono', monospace; font-size: 11px; letter-spacing: 3px; color: #2d4a7a; text-transform: uppercase; border-bottom: 1px solid #1a2540; padding-bottom: 8px; margin-bottom: 16px; }
+section[data-testid="stSidebar"] { background: #080c18 !important; border-right: 1px solid #1a2540; }
+#MainMenu, footer, header { visibility: hidden; }
+.status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; animation: pulse 1.5s infinite; }
+.dot-live { background: #00dc78; }
+.dot-paused { background: #ffc800; }
+.dot-stopped { background: #ff4040; animation: none; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+</style>
+""", unsafe_allow_html=True)
 
 try:
     from vehicle_detection import VehicleDetector
@@ -20,13 +47,8 @@ try:
 except ImportError:
     REAL_MODULES = False
 
-# ---------------------------------------------
-# Stub classes (used when real modules absent)
-# ---------------------------------------------
-
 class StubVehicleDetector:
     CLASSES = ["car", "truck", "bus", "motorcycle", "bicycle"]
-
     def detect(self, frame):
         h, w = frame.shape[:2]
         n = int(5 + 10 * abs(np.sin(time.time() * 0.3)) + np.random.randint(0, 4))
@@ -41,10 +63,7 @@ class StubVehicleDetector:
             vehicles.append(([x1, y1, x2, y2], conf, cls))
         return vehicles
 
-
 class StubCongestionPredictor:
-    LEVELS = ["FREE", "LIGHT", "MODERATE", "HEAVY", "GRIDLOCK"]
-
     def predict(self, density):
         if density < 5:   return "FREE"
         if density < 10:  return "LIGHT"
@@ -52,182 +71,63 @@ class StubCongestionPredictor:
         if density < 22:  return "HEAVY"
         return "GRIDLOCK"
 
-# ---------------------------------------------
-# Global state
-# ---------------------------------------------
-
-HISTORY_LEN = 120
-
-state = {
-    "running":       False,
-    "paused":        False,
-    "density":       0,
-    "congestion":    "-",
-    "fps":           0.0,
-    "frame_count":   0,
-    "alerts":        [],
-    "class_counts":  {},
-    "history": {
-        "timestamps":  deque(maxlen=HISTORY_LEN),
-        "density":     deque(maxlen=HISTORY_LEN),
-        "fps":         deque(maxlen=HISTORY_LEN),
-        "congestion":  deque(maxlen=HISTORY_LEN),
-    },
-    "session_log":   [],
-    "start_time":    None,
-}
-
-frame_queue = queue.Queue(maxsize=2)
-sse_clients  = []
-sse_lock     = threading.Lock()
-
-CONGESTION_ORDER = ["FREE", "LIGHT", "MODERATE", "HEAVY", "GRIDLOCK"]
 CONGESTION_COLORS = {
     "FREE":     (0, 220, 120),
     "LIGHT":    (0, 200, 255),
-    "MODERATE": (0, 140, 255),
-    "HEAVY":    (0, 60,  255),
+    "MODERATE": (0, 200, 255),
+    "HEAVY":    (0, 100, 255),
     "GRIDLOCK": (0, 0,   220),
 }
 
-# ---------------------------------------------
-# SSE helpers
-# ---------------------------------------------
+HISTORY_LEN = 60
 
-def broadcast_sse(data: dict):
-    payload = "data: " + json.dumps(data) + "\n\n"
-    with sse_lock:
-        dead = []
-        for q in sse_clients:
-            try:
-                q.put_nowait(payload)
-            except queue.Full:
-                dead.append(q)
-        for q in dead:
-            sse_clients.remove(q)
+def init_state():
+    defaults = {
+        "running": False,
+        "paused": False,
+        "density": 0,
+        "congestion": "FREE",
+        "fps": 0.0,
+        "frame_count": 0,
+        "alerts": [],
+        "class_counts": {},
+        "history_density": deque(maxlen=HISTORY_LEN),
+        "history_fps": deque(maxlen=HISTORY_LEN),
+        "history_ts": deque(maxlen=HISTORY_LEN),
+        "alert_cooldown": 0,
+        "current_frame": None,
+        "video_path": "",
+        "video_loaded": False,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-# ---------------------------------------------
-# Video processing thread
-# ---------------------------------------------
+init_state()
 
-def processing_loop(video_path: str, detector, predictor):
-    global state
+def get_video_url(youtube_url: str) -> str:
+    ydl_opts = {
+        'format': 'best[ext=mp4][height<=480]/best[height<=480]/best',
+        'quiet': True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(youtube_url, download=False)
+        return info['url']
 
+@st.cache_resource
+def get_resources():
+    detector  = VehicleDetector(model_path="yolov8n.pt") if REAL_MODULES else StubVehicleDetector()
+    predictor = CongestionPredictor() if REAL_MODULES else StubCongestionPredictor()
+    return detector, predictor
+
+@st.cache_resource
+def get_cap(video_path):
     cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        print(f"[ERROR] Cannot open: {video_path}")
-        return
+    return cap
 
-    state["running"] = True
-    state["start_time"] = datetime.now().isoformat()
-
-    fps_times = deque(maxlen=30)
-    last_sample = 0.0
-    alert_cooldown = 0
-
-    print(f"[INFO] Processing: {video_path}")
-
-    while state["running"]:
-        if state["paused"]:
-            time.sleep(0.05)
-            continue
-
-        t0 = time.time()
-        ret, frame = cap.read()
-        if not ret:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            continue
-
-        vehicles = detector.detect(frame)
-        density  = len(vehicles)
-
-        class_counts = {}
-        for _, _, cls in vehicles:
-            class_counts[cls] = class_counts.get(cls, 0) + 1
-
-        congestion = predictor.predict(density)
-
-        fps_times.append(time.time())
-        if len(fps_times) > 1:
-            fps = len(fps_times) / (fps_times[-1] - fps_times[0])
-        else:
-            fps = 0.0
-
-        state["frame_count"] += 1
-        state["density"]      = density
-        state["congestion"]   = congestion
-        state["fps"]          = round(fps, 1)
-        state["class_counts"] = class_counts
-
-        alert_cooldown -= 1
-        if congestion in ("HEAVY", "GRIDLOCK") and alert_cooldown <= 0:
-            alert = {
-                "time": datetime.now().strftime("%H:%M:%S"),
-                "msg":  f"{congestion} congestion - {density} vehicles",
-                "level": congestion,
-            }
-            state["alerts"].insert(0, alert)
-            state["alerts"] = state["alerts"][:20]
-            alert_cooldown = 60
-
-        annotated = annotate(frame.copy(), vehicles, density, congestion, fps)
-
-        try:
-            frame_queue.put_nowait(annotated)
-        except queue.Full:
-            try:
-                frame_queue.get_nowait()
-                frame_queue.put_nowait(annotated)
-            except Exception:
-                pass
-
-        now = time.time()
-        if now - last_sample >= 0.5:
-            last_sample = now
-            ts = datetime.now().strftime("%H:%M:%S")
-            state["history"]["timestamps"].append(ts)
-            state["history"]["density"].append(density)
-            state["history"]["fps"].append(round(fps, 1))
-            state["history"]["congestion"].append(
-                CONGESTION_ORDER.index(congestion) if congestion in CONGESTION_ORDER else 0
-            )
-
-            log_row = {
-                "timestamp": ts,
-                "density": density,
-                "congestion": congestion,
-                "fps": round(fps, 1),
-                **{f"cls_{k}": v for k, v in class_counts.items()},
-            }
-            state["session_log"].append(log_row)
-
-            broadcast_sse({
-                "density":      density,
-                "congestion":   congestion,
-                "fps":          round(fps, 1),
-                "frame_count":  state["frame_count"],
-                "class_counts": class_counts,
-                "ts":           ts,
-                "history": {
-                    "timestamps": list(state["history"]["timestamps"]),
-                    "density":    list(state["history"]["density"]),
-                    "fps":        list(state["history"]["fps"]),
-                    "congestion": list(state["history"]["congestion"]),
-                },
-            })
-
-        elapsed = time.time() - t0
-        time.sleep(max(0, 1/30 - elapsed))
-
-    cap.release()
-    state["running"] = False
-    print("[INFO] Processing stopped.")
-
-
-def annotate(frame, vehicles, density, congestion, fps):
+def annotate_frame(frame, vehicles, density, congestion, fps):
     h, w = frame.shape[:2]
     color = CONGESTION_COLORS.get(congestion, (255, 255, 255))
-
     for box, conf, cls in vehicles:
         x1, y1, x2, y2 = map(int, box)
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
@@ -236,166 +136,246 @@ def annotate(frame, vehicles, density, congestion, fps):
         cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
         cv2.putText(frame, label, (x1 + 2, y1 - 4),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
-
     overlay = frame.copy()
-    cv2.rectangle(overlay, (0, 0), (w, 90), (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
-
-    cv2.putText(frame, f"DENSITY: {density}", (14, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-    cv2.putText(frame, f"CONGESTION: {congestion}", (14, 60),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-    cv2.putText(frame, f"FPS: {fps:.1f}", (w - 120, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
-    ts = datetime.now().strftime("%H:%M:%S")
-    cv2.putText(frame, ts, (w - 120, 60),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
-
+    cv2.rectangle(overlay, (0, 0), (w, 80), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+    cv2.putText(frame, f"DENSITY: {density}", (12, 28),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+    cv2.putText(frame, f"{congestion}", (12, 62),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+    cv2.putText(frame, f"FPS:{fps:.1f}  {datetime.now().strftime('%H:%M:%S')}",
+                (w - 200, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 180), 1)
     return frame
 
-# ---------------------------------------------
-# Flask app
-# ---------------------------------------------
+def process_one_frame():
+    if not st.session_state.running or st.session_state.paused:
+        return
+    if not st.session_state.video_path:
+        return
 
-app = Flask(__name__)
+    detector, predictor = get_resources()
+    cap = get_cap(st.session_state.video_path)
 
-@app.route("/")
-def index():
-    return render_template_string(DASHBOARD_HTML)
+    ret, frame = cap.read()
+    if not ret:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        ret, frame = cap.read()
+    if not ret:
+        st.warning("Could not read frame. Check video source.")
+        return
 
-@app.route("/video_feed")
-def video_feed():
-    def generate():
-        while True:
-            try:
-                frame = frame_queue.get(timeout=1.0)
-                _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-                yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
-                       + buf.tobytes() + b"\r\n")
-            except queue.Empty:
-                pass
-    return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
+    vehicles   = detector.detect(frame)
+    density    = len(vehicles)
+    congestion = predictor.predict(density)
+    fps        = 15.0
 
-@app.route("/stream")
-def stream():
-    q = queue.Queue(maxsize=10)
-    with sse_lock:
-        sse_clients.append(q)
+    class_counts = {}
+    for _, _, cls in vehicles:
+        class_counts[cls] = class_counts.get(cls, 0) + 1
 
-    def generate():
-        yield "data: " + json.dumps({
-            "density":      state["density"],
-            "congestion":   state["congestion"],
-            "fps":          state["fps"],
-            "frame_count":  state["frame_count"],
-            "class_counts": state["class_counts"],
-            "ts":           datetime.now().strftime("%H:%M:%S"),
-            "history": {
-                "timestamps": list(state["history"]["timestamps"]),
-                "density":    list(state["history"]["density"]),
-                "fps":        list(state["history"]["fps"]),
-                "congestion": list(state["history"]["congestion"]),
-            },
-        }) + "\n\n"
+    st.session_state.density      = density
+    st.session_state.congestion   = congestion
+    st.session_state.fps          = fps
+    st.session_state.frame_count += 1
+    st.session_state.class_counts = class_counts
 
-        try:
-            while True:
+    ts = datetime.now().strftime("%H:%M:%S")
+    st.session_state.history_density.append(density)
+    st.session_state.history_fps.append(fps)
+    st.session_state.history_ts.append(ts)
+
+    st.session_state.alert_cooldown -= 1
+    if congestion in ("HEAVY", "GRIDLOCK") and st.session_state.alert_cooldown <= 0:
+        st.session_state.alerts.insert(0, {
+            "time": ts,
+            "msg": f"{congestion} - {density} vehicles detected",
+            "level": congestion,
+        })
+        st.session_state.alerts = st.session_state.alerts[:10]
+        st.session_state.alert_cooldown = 10
+
+    annotated = annotate_frame(frame.copy(), vehicles, density, congestion, fps)
+    st.session_state.current_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+
+process_one_frame()
+
+# -----------------------------------------------
+# Sidebar
+# -----------------------------------------------
+with st.sidebar:
+    st.markdown("## Traffic Monitor")
+    st.markdown(f"*{'REAL' if REAL_MODULES else 'DEMO'} mode*")
+    st.divider()
+
+    st.markdown('<div class="section-title">Video Source</div>', unsafe_allow_html=True)
+
+    source_type = st.radio("Source", ["YouTube URL", "Local file"], horizontal=True)
+
+    SAMPLE_URLS = {
+        "NYC Times Square": "https://www.youtube.com/watch?v=gSu_Y5OEofc",
+        "Tokyo Traffic":    "https://www.youtube.com/watch?v=MNn9qKG2UFI",
+        "Highway Cam":      "https://www.youtube.com/watch?v=1EiC9bvVGnk",
+        "India Traffic":    "https://www.youtube.com/watch?v=wqctLW0Hb7s",
+    }
+
+    if source_type == "YouTube URL":
+        selected = st.selectbox("Quick pick", ["Custom URL"] + list(SAMPLE_URLS.keys()))
+        if selected == "Custom URL":
+            yt_url = st.text_input("YouTube URL", placeholder="https://www.youtube.com/watch?v=...")
+        else:
+            yt_url = SAMPLE_URLS[selected]
+            st.caption(yt_url)
+
+        if st.button("Load Video", type="primary"):
+            with st.spinner("Fetching stream URL..."):
                 try:
-                    data = q.get(timeout=20)
-                    yield data
-                except queue.Empty:
-                    yield ": keep-alive\n\n"
-        except GeneratorExit:
-            with sse_lock:
-                if q in sse_clients:
-                    sse_clients.remove(q)
+                    direct_url = get_video_url(yt_url)
+                    st.session_state.video_path = direct_url
+                    st.session_state.video_loaded = True
+                    get_cap.clear()
+                    st.success("Video loaded!")
+                except Exception as e:
+                    st.error(f"Failed: {e}")
+    else:
+        local_path = st.text_input("Local file path", value="traffic4.mp4")
+        if st.button("Load File", type="primary"):
+            st.session_state.video_path = local_path
+            st.session_state.video_loaded = True
+            get_cap.clear()
+            st.success("File loaded!")
 
-    return Response(generate(), mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    st.divider()
+    st.markdown('<div class="section-title">Controls</div>', unsafe_allow_html=True)
 
-@app.route("/api/status")
-def api_status():
-    return jsonify({
-        "running":      state["running"],
-        "paused":       state["paused"],
-        "density":      state["density"],
-        "congestion":   state["congestion"],
-        "fps":          state["fps"],
-        "frame_count":  state["frame_count"],
-        "class_counts": state["class_counts"],
-        "alerts":       state["alerts"][:5],
-    })
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Start", use_container_width=True, type="primary",
+                     disabled=st.session_state.running or not st.session_state.video_loaded):
+            st.session_state.running = True
+            st.session_state.paused  = False
+            st.session_state.frame_count = 0
+            st.rerun()
+    with col2:
+        if st.button("Stop", use_container_width=True,
+                     disabled=not st.session_state.running):
+            st.session_state.running = False
+            st.session_state.paused  = False
+            st.rerun()
 
-@app.route("/api/history")
-def api_history():
-    return jsonify({
-        "timestamps": list(state["history"]["timestamps"]),
-        "density":    list(state["history"]["density"]),
-        "fps":        list(state["history"]["fps"]),
-        "congestion": list(state["history"]["congestion"]),
-    })
+    if st.session_state.running:
+        label = "Resume" if st.session_state.paused else "Pause"
+        if st.button(label, use_container_width=True):
+            st.session_state.paused = not st.session_state.paused
+            st.rerun()
 
-@app.route("/api/alerts")
-def api_alerts():
-    return jsonify(state["alerts"])
+    st.divider()
 
-@app.route("/api/control", methods=["POST"])
-def api_control():
-    action = request.json.get("action")
-    if action == "pause":
-        state["paused"] = True
-    elif action == "resume":
-        state["paused"] = False
-    elif action == "stop":
-        state["running"] = False
-    return jsonify({"ok": True, "paused": state["paused"], "running": state["running"]})
+    if st.session_state.running and not st.session_state.paused:
+        st.markdown('<span class="status-dot dot-live"></span> **LIVE**', unsafe_allow_html=True)
+    elif st.session_state.paused:
+        st.markdown('<span class="status-dot dot-paused"></span> **PAUSED**', unsafe_allow_html=True)
+    else:
+        st.markdown('<span class="status-dot dot-stopped"></span> **STOPPED**', unsafe_allow_html=True)
 
-@app.route("/api/export/csv")
-def export_csv():
-    if not state["session_log"]:
-        return jsonify({"error": "No data"}), 404
-    si = io.StringIO()
-    keys = list(state["session_log"][0].keys())
-    w = csv.DictWriter(si, fieldnames=keys)
-    w.writeheader()
-    w.writerows(state["session_log"])
-    output = io.BytesIO(si.getvalue().encode())
-    return send_file(output, mimetype="text/csv",
-                     as_attachment=True, download_name="traffic_session.csv")
+    st.markdown(f"**Frames:** {st.session_state.frame_count:,}")
 
-# ---------------------------------------------
-# Dashboard HTML
-# ---------------------------------------------
+    st.divider()
+    st.markdown('<div class="section-title">Congestion Scale</div>', unsafe_allow_html=True)
+    for level, color in [("FREE","#00dc78"),("LIGHT","#00c8ff"),("MODERATE","#ffc800"),
+                          ("HEAVY","#ff6400"),("GRIDLOCK","#ff2020")]:
+        st.markdown(f'<span style="color:{color}">&#9632;</span> {level}', unsafe_allow_html=True)
 
-_here = os.path.dirname(__file__)
-_html_path = os.path.join(_here, "dashboard.html")
-DASHBOARD_HTML = open(_html_path).read() if os.path.exists(_html_path) else "<h1>dashboard.html not found</h1>"
+# -----------------------------------------------
+# Main layout
+# -----------------------------------------------
+st.markdown("# Traffic Monitoring Dashboard")
+st.markdown("---")
 
-# ---------------------------------------------
-# Entry point
-# ---------------------------------------------
+c1, c2, c3, c4 = st.columns(4)
+congestion = st.session_state.congestion
+badge_class = f"badge badge-{congestion}"
+color_map = {
+    "FREE": "#00dc78", "LIGHT": "#00c8ff",
+    "MODERATE": "#ffc800", "HEAVY": "#ff6400", "GRIDLOCK": "#ff2020"
+}
+col = color_map.get(congestion, "#ffffff")
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--video", default="traffic4.mp4")
-    parser.add_argument("--port",  default=5000, type=int)
-    args = parser.parse_args()
+with c1:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-label">Vehicle Density</div>
+        <div class="metric-value" style="color:{col}">{st.session_state.density}</div>
+        <div class="metric-sub">vehicles in frame</div>
+    </div>""", unsafe_allow_html=True)
 
-    detector  = VehicleDetector(model_path="yolov8n.pt") if REAL_MODULES else StubVehicleDetector()
-    predictor = CongestionPredictor()                     if REAL_MODULES else StubCongestionPredictor()
+with c2:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-label">Congestion Level</div>
+        <div style="margin-top:8px"><span class="{badge_class}">{congestion}</span></div>
+        <div class="metric-sub" style="margin-top:10px">current status</div>
+    </div>""", unsafe_allow_html=True)
 
-    mode = "REAL" if REAL_MODULES else "DEMO (stub)"
-    print(f"\nTraffic Monitor starting - {mode} mode")
-    print(f"   Video : {args.video}")
-    print(f"   Dashboard: http://127.0.0.1:{args.port}\n")
+with c3:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-label">Processing FPS</div>
+        <div class="metric-value" style="color:#4a9eff">{st.session_state.fps:.1f}</div>
+        <div class="metric-sub">frames / second</div>
+    </div>""", unsafe_allow_html=True)
 
-    t = threading.Thread(target=processing_loop,
-                         args=(args.video, detector, predictor),
-                         daemon=True)
-    t.start()
+with c4:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-label">Total Frames</div>
+        <div class="metric-value" style="color:#a78bfa">{st.session_state.frame_count:,}</div>
+        <div class="metric-sub">processed</div>
+    </div>""", unsafe_allow_html=True)
 
-    app.run(host="0.0.0.0", port=args.port, threaded=True, debug=False)
+st.markdown("<br>", unsafe_allow_html=True)
 
+left, right = st.columns([3, 2])
 
-if __name__ == "__main__":
-    main()
+with left:
+    st.markdown('<div class="section-title">Live Video Feed</div>', unsafe_allow_html=True)
+    if st.session_state.current_frame is not None:
+        st.image(st.session_state.current_frame, use_container_width=True)
+    else:
+        st.markdown("""
+        <div style="height:300px; background:#050810; border:1px solid #1e2d50;
+             border-radius:12px; display:flex; align-items:center; justify-content:center;
+             color:#2d4a7a; font-family:'Share Tech Mono',monospace; font-size:13px;">
+            Load a video source and press START
+        </div>""", unsafe_allow_html=True)
+
+with right:
+    st.markdown('<div class="section-title">Density History</div>', unsafe_allow_html=True)
+    if st.session_state.history_density:
+        import pandas as pd
+        df = pd.DataFrame({"Density": list(st.session_state.history_density)})
+        st.line_chart(df, height=180, use_container_width=True)
+    else:
+        st.caption("No data yet")
+
+    st.markdown('<div class="section-title">Vehicle Classes</div>', unsafe_allow_html=True)
+    if st.session_state.class_counts:
+        import pandas as pd
+        df2 = pd.DataFrame.from_dict(st.session_state.class_counts, orient='index', columns=['Count'])
+        st.bar_chart(df2, height=160, use_container_width=True)
+    else:
+        st.caption("No data yet")
+
+st.markdown("<br>", unsafe_allow_html=True)
+st.markdown('<div class="section-title">Congestion Alerts</div>', unsafe_allow_html=True)
+if st.session_state.alerts:
+    for alert in st.session_state.alerts[:5]:
+        st.markdown(f"""
+        <div class="alert-item">
+            [{alert['time']}] {alert['msg']}
+        </div>""", unsafe_allow_html=True)
+else:
+    st.caption("No alerts - traffic is flowing normally.")
+
+if st.session_state.running and not st.session_state.paused:
+    time.sleep(0.5)
+    st.rerun()

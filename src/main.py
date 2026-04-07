@@ -7,12 +7,7 @@ from datetime import datetime
 import urllib.request
 import os
 
-st.set_page_config(
-    page_title="Traffic Monitor",
-    page_icon="🚦",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="Traffic Monitor", page_icon="🚦", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
@@ -34,9 +29,7 @@ html, body, [class*="css"] { font-family: 'Rajdhani', sans-serif; background-col
 section[data-testid="stSidebar"] { background: #080c18 !important; border-right: 1px solid #1a2540; }
 #MainMenu, footer, header { visibility: hidden; }
 .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; animation: pulse 1.5s infinite; }
-.dot-live { background: #00dc78; }
-.dot-paused { background: #ffc800; }
-.dot-stopped { background: #ff4040; animation: none; }
+.dot-live { background: #00dc78; } .dot-paused { background: #ffc800; } .dot-stopped { background: #ff4040; animation: none; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 </style>
 """, unsafe_allow_html=True)
@@ -73,40 +66,40 @@ class StubCongestionPredictor:
         return "GRIDLOCK"
 
 CONGESTION_COLORS = {
-    "FREE":     (0, 220, 120),
-    "LIGHT":    (0, 200, 255),
-    "MODERATE": (0, 200, 255),
-    "HEAVY":    (0, 100, 255),
-    "GRIDLOCK": (0, 0,   220),
+    "FREE": (0, 220, 120), "LIGHT": (0, 200, 255),
+    "MODERATE": (0, 200, 255), "HEAVY": (0, 100, 255), "GRIDLOCK": (0, 0, 220),
 }
-
 HISTORY_LEN = 60
 
+# Direct downloadable MP4 files (tested to work with OpenCV)
 SAMPLE_VIDEOS = {
-    "-- Select a sample --": "",
-    "Highway Traffic (MP4)":     "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
-    "Street Traffic (MP4)":      "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/SubaruOutbackOnStreetAndDirt.mp4",
-    "Busy Road (MP4)":           "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
-    "City Drive (MP4)":          "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/WeAreGoingOnBullrun.mp4",
+    "-- Select --": "",
+    "Traffic Sample 1": "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
+    "Traffic Sample 2": "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
+    "Traffic Sample 3": "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
+    "Traffic Sample 4": "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4",
 }
+
+VIDEO_CACHE_DIR = "/tmp/traffic_videos"
+os.makedirs(VIDEO_CACHE_DIR, exist_ok=True)
+
+def download_video(url: str, name: str) -> str:
+    """Download MP4 to /tmp and return local path."""
+    safe_name = name.replace(" ", "_") + ".mp4"
+    local_path = os.path.join(VIDEO_CACHE_DIR, safe_name)
+    if not os.path.exists(local_path):
+        urllib.request.urlretrieve(url, local_path)
+    return local_path
 
 def init_state():
     defaults = {
-        "running": False,
-        "paused": False,
-        "density": 0,
-        "congestion": "FREE",
-        "fps": 0.0,
-        "frame_count": 0,
-        "alerts": [],
-        "class_counts": {},
+        "running": False, "paused": False, "density": 0,
+        "congestion": "FREE", "fps": 0.0, "frame_count": 0,
+        "alerts": [], "class_counts": {},
         "history_density": deque(maxlen=HISTORY_LEN),
         "history_ts": deque(maxlen=HISTORY_LEN),
-        "alert_cooldown": 0,
-        "current_frame": None,
-        "video_path": "",
-        "video_loaded": False,
-        "cap": None,
+        "alert_cooldown": 0, "current_frame": None,
+        "video_path": "", "video_loaded": False, "cap": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -116,13 +109,14 @@ init_state()
 
 @st.cache_resource
 def get_resources():
-    detector  = VehicleDetector(model_path="yolov8n.pt") if REAL_MODULES else StubVehicleDetector()
-    predictor = CongestionPredictor() if REAL_MODULES else StubCongestionPredictor()
-    return detector, predictor
+    d = VehicleDetector(model_path="yolov8n.pt") if REAL_MODULES else StubVehicleDetector()
+    p = CongestionPredictor() if REAL_MODULES else StubCongestionPredictor()
+    return d, p
 
 def load_video(path):
     if st.session_state.cap is not None:
-        st.session_state.cap.release()
+        try: st.session_state.cap.release()
+        except: pass
     cap = cv2.VideoCapture(path)
     if cap.isOpened():
         st.session_state.cap = cap
@@ -140,62 +134,44 @@ def annotate_frame(frame, vehicles, density, congestion, fps):
         label = f"{cls} {conf:.0%}"
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
         cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
-        cv2.putText(frame, label, (x1 + 2, y1 - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
+        cv2.putText(frame, label, (x1 + 2, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, 0), (w, 80), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
-    cv2.putText(frame, f"DENSITY: {density}", (12, 28),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
-    cv2.putText(frame, f"{congestion}", (12, 62),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
-    cv2.putText(frame, f"FPS:{fps:.1f}  {datetime.now().strftime('%H:%M:%S')}",
-                (w - 200, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 180), 1)
+    cv2.putText(frame, f"DENSITY: {density}", (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+    cv2.putText(frame, f"{congestion}", (12, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+    cv2.putText(frame, f"FPS:{fps:.1f}  {datetime.now().strftime('%H:%M:%S')}", (w - 200, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 180), 1)
     return frame
 
 def process_one_frame():
-    if not st.session_state.running or st.session_state.paused:
-        return
-    if st.session_state.cap is None or not st.session_state.cap.isOpened():
-        return
-
+    if not st.session_state.running or st.session_state.paused: return
+    if st.session_state.cap is None or not st.session_state.cap.isOpened(): return
     detector, predictor = get_resources()
     cap = st.session_state.cap
-
     ret, frame = cap.read()
     if not ret:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         ret, frame = cap.read()
-    if not ret:
-        return
-
+    if not ret: return
     vehicles   = detector.detect(frame)
     density    = len(vehicles)
     congestion = predictor.predict(density)
-
     class_counts = {}
     for _, _, cls in vehicles:
         class_counts[cls] = class_counts.get(cls, 0) + 1
-
     st.session_state.density      = density
     st.session_state.congestion   = congestion
     st.session_state.fps          = 15.0
     st.session_state.frame_count += 1
     st.session_state.class_counts = class_counts
-
     ts = datetime.now().strftime("%H:%M:%S")
     st.session_state.history_density.append(density)
     st.session_state.history_ts.append(ts)
-
     st.session_state.alert_cooldown -= 1
     if congestion in ("HEAVY", "GRIDLOCK") and st.session_state.alert_cooldown <= 0:
-        st.session_state.alerts.insert(0, {
-            "time": ts,
-            "msg": f"{congestion} - {density} vehicles detected",
-        })
+        st.session_state.alerts.insert(0, {"time": ts, "msg": f"{congestion} - {density} vehicles detected"})
         st.session_state.alerts = st.session_state.alerts[:10]
         st.session_state.alert_cooldown = 10
-
     annotated = annotate_frame(frame.copy(), vehicles, density, congestion, 15.0)
     st.session_state.current_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
 
@@ -212,27 +188,20 @@ with st.sidebar:
     st.markdown('<div class="section-title">Video Source</div>', unsafe_allow_html=True)
 
     selected = st.selectbox("Sample videos", list(SAMPLE_VIDEOS.keys()))
-    if selected != "-- Select a sample --":
-        if st.button("Load Sample", type="primary"):
-            with st.spinner("Connecting to stream..."):
-                if load_video(SAMPLE_VIDEOS[selected]):
-                    st.success("Loaded!")
-                else:
-                    st.error("Could not open stream.")
-
-    st.markdown("**Or paste a direct MP4 URL:**")
-    custom_url = st.text_input("MP4 URL", placeholder="https://example.com/video.mp4", label_visibility="collapsed")
-    if custom_url:
-        if st.button("Load URL"):
-            with st.spinner("Connecting..."):
-                if load_video(custom_url):
-                    st.success("Loaded!")
-                else:
-                    st.error("Could not open. Make sure it's a direct MP4 link.")
+    if selected != "-- Select --":
+        if st.button("Load & Download Sample", type="primary"):
+            with st.spinner(f"Downloading {selected}..."):
+                try:
+                    local_path = download_video(SAMPLE_VIDEOS[selected], selected)
+                    if load_video(local_path):
+                        st.success("Ready! Press Start.")
+                    else:
+                        st.error("Could not open video.")
+                except Exception as e:
+                    st.error(f"Download failed: {e}")
 
     st.divider()
     st.markdown('<div class="section-title">Controls</div>', unsafe_allow_html=True)
-
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Start", use_container_width=True, type="primary",
@@ -241,15 +210,12 @@ with st.sidebar:
             st.session_state.paused  = False
             st.rerun()
     with col2:
-        if st.button("Stop", use_container_width=True,
-                     disabled=not st.session_state.running):
+        if st.button("Stop", use_container_width=True, disabled=not st.session_state.running):
             st.session_state.running = False
             st.session_state.paused  = False
             st.rerun()
-
     if st.session_state.running:
-        if st.button("Pause" if not st.session_state.paused else "Resume",
-                     use_container_width=True):
+        if st.button("Pause" if not st.session_state.paused else "Resume", use_container_width=True):
             st.session_state.paused = not st.session_state.paused
             st.rerun()
 
@@ -260,13 +226,11 @@ with st.sidebar:
         st.markdown('<span class="status-dot dot-paused"></span> **PAUSED**', unsafe_allow_html=True)
     else:
         st.markdown('<span class="status-dot dot-stopped"></span> **STOPPED**', unsafe_allow_html=True)
-
     st.markdown(f"**Frames:** {st.session_state.frame_count:,}")
 
     st.divider()
     st.markdown('<div class="section-title">Congestion Scale</div>', unsafe_allow_html=True)
-    for level, color in [("FREE","#00dc78"),("LIGHT","#00c8ff"),("MODERATE","#ffc800"),
-                          ("HEAVY","#ff6400"),("GRIDLOCK","#ff2020")]:
+    for level, color in [("FREE","#00dc78"),("LIGHT","#00c8ff"),("MODERATE","#ffc800"),("HEAVY","#ff6400"),("GRIDLOCK","#ff2020")]:
         st.markdown(f'<span style="color:{color}">&#9632;</span> {level}', unsafe_allow_html=True)
 
 # -----------------------------------------------
@@ -297,7 +261,7 @@ with left:
     if st.session_state.current_frame is not None:
         st.image(st.session_state.current_frame, use_container_width=True)
     else:
-        st.markdown('<div style="height:300px;background:#050810;border:1px solid #1e2d50;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#2d4a7a;font-family:monospace;font-size:13px;">Select a video source and press START</div>', unsafe_allow_html=True)
+        st.markdown('<div style="height:300px;background:#050810;border:1px solid #1e2d50;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#2d4a7a;font-family:monospace;font-size:13px;">Download a sample and press START</div>', unsafe_allow_html=True)
 
 with right:
     st.markdown('<div class="section-title">Density History</div>', unsafe_allow_html=True)
@@ -306,7 +270,6 @@ with right:
         st.line_chart(pd.DataFrame({"Density": list(st.session_state.history_density)}), height=180)
     else:
         st.caption("No data yet")
-
     st.markdown('<div class="section-title">Vehicle Classes</div>', unsafe_allow_html=True)
     if st.session_state.class_counts:
         import pandas as pd

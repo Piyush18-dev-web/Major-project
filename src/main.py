@@ -74,21 +74,24 @@ HISTORY_LEN = 60
 # Direct downloadable MP4 files (tested to work with OpenCV)
 SAMPLE_VIDEOS = {
     "-- Select --": "",
-    "Traffic Video 1": "https://www.pexels.com/download/video/854671/",
-    "Traffic Video 2": "https://www.pexels.com/download/video/855564/",
-    "Traffic Video 3": "https://www.pexels.com/download/video/2103099/",
+    "Highway Traffic": "https://upload.wikimedia.org/wikipedia/commons/transcoded/d/d3/Highway_Traffic.ogv/Highway_Traffic.ogv.480p.vp9.webm",
+    "City Traffic":    "https://upload.wikimedia.org/wikipedia/commons/transcoded/8/8e/Crowd_at_the_Mahane_Yehuda_market.ogv/Crowd_at_the_Mahane_Yehuda_market.ogv.480p.vp9.webm",
+    "Busy Street":     "https://upload.wikimedia.org/wikipedia/commons/transcoded/2/24/Bikes_in_traffic.ogv/Bikes_in_traffic.ogv.480p.vp9.webm",
 }
 
 VIDEO_CACHE_DIR = "/tmp/traffic_videos"
 os.makedirs(VIDEO_CACHE_DIR, exist_ok=True)
 
-def download_video(url: str, name: str) -> str:
-    """Download MP4 to /tmp and return local path."""
-    safe_name = name.replace(" ", "_") + ".mp4"
-    local_path = os.path.join(VIDEO_CACHE_DIR, safe_name)
-    if not os.path.exists(local_path):
-        urllib.request.urlretrieve(url, local_path)
-    return local_path
+def get_stream_url(url: str) -> str:
+    """Get direct stream URL using streamlink."""
+    import subprocess
+    result = subprocess.run(
+        ["streamlink", "--stream-url", url, "worst"],
+        capture_output=True, text=True, timeout=30
+    )
+    if result.returncode == 0:
+        return result.stdout.strip()
+    raise Exception(result.stderr)
 
 def init_state():
     defaults = {

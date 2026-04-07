@@ -4,7 +4,6 @@ import time
 import numpy as np
 from collections import deque
 from datetime import datetime
-import urllib.request
 import os
 
 st.set_page_config(page_title="Traffic Monitor", page_icon="🚦", layout="wide", initial_sidebar_state="expanded")
@@ -14,7 +13,7 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap');
 html, body, [class*="css"] { font-family: 'Rajdhani', sans-serif; background-color: #0a0e1a; color: #e0e6f0; }
 .stApp { background-color: #0a0e1a; }
-.metric-card { background: linear-gradient(135deg, #0f1629 0%, #151d35 100%); border: 1px solid #1e2d50; border-radius: 12px; padding: 20px 24px; text-align: center; box-shadow: 0 4px 24px rgba(0,0,0,0.4); }
+.metric-card { background: linear-gradient(135deg, #0f1629 0%, #151d35 100%); border: 1px solid #1e2d50; border-radius: 12px; padding: 20px 24px; text-align: center; }
 .metric-label { font-family: 'Share Tech Mono', monospace; font-size: 11px; letter-spacing: 2px; color: #4a6fa5; text-transform: uppercase; margin-bottom: 8px; }
 .metric-value { font-family: 'Share Tech Mono', monospace; font-size: 42px; font-weight: 700; line-height: 1; }
 .metric-sub { font-size: 12px; color: #4a6fa5; margin-top: 6px; }
@@ -70,28 +69,28 @@ CONGESTION_COLORS = {
     "MODERATE": (0, 200, 255), "HEAVY": (0, 100, 255), "GRIDLOCK": (0, 0, 220),
 }
 HISTORY_LEN = 60
-
-# Direct downloadable MP4 files (tested to work with OpenCV)
-SAMPLE_VIDEOS = {
-    "-- Select --": "",
-    "Highway Traffic": "https://upload.wikimedia.org/wikipedia/commons/transcoded/d/d3/Highway_Traffic.ogv/Highway_Traffic.ogv.480p.vp9.webm",
-    "City Traffic":    "https://upload.wikimedia.org/wikipedia/commons/transcoded/8/8e/Crowd_at_the_Mahane_Yehuda_market.ogv/Crowd_at_the_Mahane_Yehuda_market.ogv.480p.vp9.webm",
-    "Busy Street":     "https://upload.wikimedia.org/wikipedia/commons/transcoded/2/24/Bikes_in_traffic.ogv/Bikes_in_traffic.ogv.480p.vp9.webm",
-}
-
 VIDEO_CACHE_DIR = "/tmp/traffic_videos"
 os.makedirs(VIDEO_CACHE_DIR, exist_ok=True)
 
-def get_stream_url(url: str) -> str:
-    """Get direct stream URL using streamlink."""
-    import subprocess
-    result = subprocess.run(
-        ["streamlink", "--stream-url", url, "worst"],
-        capture_output=True, text=True, timeout=30
-    )
-    if result.returncode == 0:
-        return result.stdout.strip()
-    raise Exception(result.stderr)
+SAMPLE_URLS = {
+    "-- Select a sample --": "",
+    "NYC Times Square":      "https://www.youtube.com/watch?v=gSu_Y5OEofc",
+    "Tokyo Highway":         "https://www.youtube.com/watch?v=MNn9qKG2UFI",
+    "India Street Traffic":  "https://www.youtube.com/watch?v=wqctLW0Hb7s",
+    "Highway Cam USA":       "https://www.youtube.com/watch?v=1EiC9bvVGnk",
+}
+
+def download_youtube(url: str) -> str:
+    from pytubefix import YouTube
+    yt = YouTube(url)
+    stream = yt.streams.filter(progressive=True, file_extension="mp4").order_by("resolution").first()
+    if not stream:
+        stream = yt.streams.filter(file_extension="mp4").order_by("resolution").first()
+    vid_id = yt.video_id
+    local_path = os.path.join(VIDEO_CACHE_DIR, f"{vid_id}.mp4")
+    if not os.path.exists(local_path):
+        stream.download(output_path=VIDEO_CACHE_DIR, filename=f"{vid_id}.mp4")
+    return local_path
 
 def init_state():
     defaults = {
@@ -101,7 +100,7 @@ def init_state():
         "history_density": deque(maxlen=HISTORY_LEN),
         "history_ts": deque(maxlen=HISTORY_LEN),
         "alert_cooldown": 0, "current_frame": None,
-        "video_path": "", "video_loaded": False, "cap": None,
+        "video_loaded": False, "cap": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -122,7 +121,6 @@ def load_video(path):
     cap = cv2.VideoCapture(path)
     if cap.isOpened():
         st.session_state.cap = cap
-        st.session_state.video_path = path
         st.session_state.video_loaded = True
         return True
     return False
@@ -187,20 +185,24 @@ with st.sidebar:
     st.markdown(f"*{'REAL' if REAL_MODULES else 'DEMO'} mode*")
     st.divider()
 
-    st.markdown('<div class="section-title">Video Source</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">YouTube Video Source</div>', unsafe_allow_html=True)
 
-    selected = st.selectbox("Sample videos", list(SAMPLE_VIDEOS.keys()))
-    if selected != "-- Select --":
-        if st.button("Load & Download Sample", type="primary"):
-            with st.spinner(f"Downloading {selected}..."):
-                try:
-                    local_path = download_video(SAMPLE_VIDEOS[selected], selected)
-                    if load_video(local_path):
-                        st.success("Ready! Press Start.")
-                    else:
-                        st.error("Could not open video.")
-                except Exception as e:
-                    st.error(f"Download failed: {e}")
+    selected = st.selectbox("Quick pick", list(SAMPLE_URLS.keys()))
+    if selected != "-- Select a sample --":
+        yt_url = SAMPLE_URLS[selected]
+    else:
+        yt_url = st.text_input("Or paste YouTube URL", placeholder="https://www.youtube.com/watch?v=...")
+
+    if st.button("Download & Load", type="primary", disabled=not yt_url):
+        with st.spinner("Downloading from YouTube... this may take 1-2 min"):
+            try:
+                local_path = download_youtube(yt_url)
+                if load_video(local_path):
+                    st.success("Ready! Press Start.")
+                else:
+                    st.error("Could not open video after download.")
+            except Exception as e:
+                st.error(f"Failed: {str(e)}")
 
     st.divider()
     st.markdown('<div class="section-title">Controls</div>', unsafe_allow_html=True)
@@ -263,7 +265,7 @@ with left:
     if st.session_state.current_frame is not None:
         st.image(st.session_state.current_frame, use_container_width=True)
     else:
-        st.markdown('<div style="height:300px;background:#050810;border:1px solid #1e2d50;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#2d4a7a;font-family:monospace;font-size:13px;">Download a sample and press START</div>', unsafe_allow_html=True)
+        st.markdown('<div style="height:300px;background:#050810;border:1px solid #1e2d50;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#2d4a7a;font-family:monospace;font-size:13px;">Download a YouTube video and press START</div>', unsafe_allow_html=True)
 
 with right:
     st.markdown('<div class="section-title">Density History</div>', unsafe_allow_html=True)

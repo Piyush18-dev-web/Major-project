@@ -4,7 +4,8 @@ import time
 import numpy as np
 from collections import deque
 from datetime import datetime
-import yt_dlp
+import urllib.request
+import os
 
 st.set_page_config(
     page_title="Traffic Monitor",
@@ -81,6 +82,14 @@ CONGESTION_COLORS = {
 
 HISTORY_LEN = 60
 
+SAMPLE_VIDEOS = {
+    "-- Select a sample --": "",
+    "Highway Traffic (MP4)":     "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
+    "Street Traffic (MP4)":      "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/SubaruOutbackOnStreetAndDirt.mp4",
+    "Busy Road (MP4)":           "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
+    "City Drive (MP4)":          "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/WeAreGoingOnBullrun.mp4",
+}
+
 def init_state():
     defaults = {
         "running": False,
@@ -92,12 +101,12 @@ def init_state():
         "alerts": [],
         "class_counts": {},
         "history_density": deque(maxlen=HISTORY_LEN),
-        "history_fps": deque(maxlen=HISTORY_LEN),
         "history_ts": deque(maxlen=HISTORY_LEN),
         "alert_cooldown": 0,
         "current_frame": None,
         "video_path": "",
         "video_loaded": False,
+        "cap": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -105,25 +114,22 @@ def init_state():
 
 init_state()
 
-def get_video_url(youtube_url: str) -> str:
-    ydl_opts = {
-        'format': 'best[ext=mp4][height<=480]/best[height<=480]/best',
-        'quiet': True,
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(youtube_url, download=False)
-        return info['url']
-
 @st.cache_resource
 def get_resources():
     detector  = VehicleDetector(model_path="yolov8n.pt") if REAL_MODULES else StubVehicleDetector()
     predictor = CongestionPredictor() if REAL_MODULES else StubCongestionPredictor()
     return detector, predictor
 
-@st.cache_resource
-def get_cap(video_path):
-    cap = cv2.VideoCapture(video_path)
-    return cap
+def load_video(path):
+    if st.session_state.cap is not None:
+        st.session_state.cap.release()
+    cap = cv2.VideoCapture(path)
+    if cap.isOpened():
+        st.session_state.cap = cap
+        st.session_state.video_path = path
+        st.session_state.video_loaded = True
+        return True
+    return False
 
 def annotate_frame(frame, vehicles, density, congestion, fps):
     h, w = frame.shape[:2]
@@ -150,24 +156,22 @@ def annotate_frame(frame, vehicles, density, congestion, fps):
 def process_one_frame():
     if not st.session_state.running or st.session_state.paused:
         return
-    if not st.session_state.video_path:
+    if st.session_state.cap is None or not st.session_state.cap.isOpened():
         return
 
     detector, predictor = get_resources()
-    cap = get_cap(st.session_state.video_path)
+    cap = st.session_state.cap
 
     ret, frame = cap.read()
     if not ret:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         ret, frame = cap.read()
     if not ret:
-        st.warning("Could not read frame. Check video source.")
         return
 
     vehicles   = detector.detect(frame)
     density    = len(vehicles)
     congestion = predictor.predict(density)
-    fps        = 15.0
 
     class_counts = {}
     for _, _, cls in vehicles:
@@ -175,13 +179,12 @@ def process_one_frame():
 
     st.session_state.density      = density
     st.session_state.congestion   = congestion
-    st.session_state.fps          = fps
+    st.session_state.fps          = 15.0
     st.session_state.frame_count += 1
     st.session_state.class_counts = class_counts
 
     ts = datetime.now().strftime("%H:%M:%S")
     st.session_state.history_density.append(density)
-    st.session_state.history_fps.append(fps)
     st.session_state.history_ts.append(ts)
 
     st.session_state.alert_cooldown -= 1
@@ -189,12 +192,11 @@ def process_one_frame():
         st.session_state.alerts.insert(0, {
             "time": ts,
             "msg": f"{congestion} - {density} vehicles detected",
-            "level": congestion,
         })
         st.session_state.alerts = st.session_state.alerts[:10]
         st.session_state.alert_cooldown = 10
 
-    annotated = annotate_frame(frame.copy(), vehicles, density, congestion, fps)
+    annotated = annotate_frame(frame.copy(), vehicles, density, congestion, 15.0)
     st.session_state.current_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
 
 process_one_frame()
@@ -209,40 +211,24 @@ with st.sidebar:
 
     st.markdown('<div class="section-title">Video Source</div>', unsafe_allow_html=True)
 
-    source_type = st.radio("Source", ["YouTube URL", "Local file"], horizontal=True)
+    selected = st.selectbox("Sample videos", list(SAMPLE_VIDEOS.keys()))
+    if selected != "-- Select a sample --":
+        if st.button("Load Sample", type="primary"):
+            with st.spinner("Connecting to stream..."):
+                if load_video(SAMPLE_VIDEOS[selected]):
+                    st.success("Loaded!")
+                else:
+                    st.error("Could not open stream.")
 
-    SAMPLE_URLS = {
-        "NYC Times Square": "https://www.youtube.com/watch?v=gSu_Y5OEofc",
-        "Tokyo Traffic":    "https://www.youtube.com/watch?v=MNn9qKG2UFI",
-        "Highway Cam":      "https://www.youtube.com/watch?v=1EiC9bvVGnk",
-        "India Traffic":    "https://www.youtube.com/watch?v=wqctLW0Hb7s",
-    }
-
-    if source_type == "YouTube URL":
-        selected = st.selectbox("Quick pick", ["Custom URL"] + list(SAMPLE_URLS.keys()))
-        if selected == "Custom URL":
-            yt_url = st.text_input("YouTube URL", placeholder="https://www.youtube.com/watch?v=...")
-        else:
-            yt_url = SAMPLE_URLS[selected]
-            st.caption(yt_url)
-
-        if st.button("Load Video", type="primary"):
-            with st.spinner("Fetching stream URL..."):
-                try:
-                    direct_url = get_video_url(yt_url)
-                    st.session_state.video_path = direct_url
-                    st.session_state.video_loaded = True
-                    get_cap.clear()
-                    st.success("Video loaded!")
-                except Exception as e:
-                    st.error(f"Failed: {e}")
-    else:
-        local_path = st.text_input("Local file path", value="traffic4.mp4")
-        if st.button("Load File", type="primary"):
-            st.session_state.video_path = local_path
-            st.session_state.video_loaded = True
-            get_cap.clear()
-            st.success("File loaded!")
+    st.markdown("**Or paste a direct MP4 URL:**")
+    custom_url = st.text_input("MP4 URL", placeholder="https://example.com/video.mp4", label_visibility="collapsed")
+    if custom_url:
+        if st.button("Load URL"):
+            with st.spinner("Connecting..."):
+                if load_video(custom_url):
+                    st.success("Loaded!")
+                else:
+                    st.error("Could not open. Make sure it's a direct MP4 link.")
 
     st.divider()
     st.markdown('<div class="section-title">Controls</div>', unsafe_allow_html=True)
@@ -253,7 +239,6 @@ with st.sidebar:
                      disabled=st.session_state.running or not st.session_state.video_loaded):
             st.session_state.running = True
             st.session_state.paused  = False
-            st.session_state.frame_count = 0
             st.rerun()
     with col2:
         if st.button("Stop", use_container_width=True,
@@ -263,13 +248,12 @@ with st.sidebar:
             st.rerun()
 
     if st.session_state.running:
-        label = "Resume" if st.session_state.paused else "Pause"
-        if st.button(label, use_container_width=True):
+        if st.button("Pause" if not st.session_state.paused else "Resume",
+                     use_container_width=True):
             st.session_state.paused = not st.session_state.paused
             st.rerun()
 
     st.divider()
-
     if st.session_state.running and not st.session_state.paused:
         st.markdown('<span class="status-dot dot-live"></span> **LIVE**', unsafe_allow_html=True)
     elif st.session_state.paused:
@@ -293,75 +277,40 @@ st.markdown("---")
 
 c1, c2, c3, c4 = st.columns(4)
 congestion = st.session_state.congestion
-badge_class = f"badge badge-{congestion}"
-color_map = {
-    "FREE": "#00dc78", "LIGHT": "#00c8ff",
-    "MODERATE": "#ffc800", "HEAVY": "#ff6400", "GRIDLOCK": "#ff2020"
-}
+color_map = {"FREE":"#00dc78","LIGHT":"#00c8ff","MODERATE":"#ffc800","HEAVY":"#ff6400","GRIDLOCK":"#ff2020"}
 col = color_map.get(congestion, "#ffffff")
 
 with c1:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-label">Vehicle Density</div>
-        <div class="metric-value" style="color:{col}">{st.session_state.density}</div>
-        <div class="metric-sub">vehicles in frame</div>
-    </div>""", unsafe_allow_html=True)
-
+    st.markdown(f'<div class="metric-card"><div class="metric-label">Vehicle Density</div><div class="metric-value" style="color:{col}">{st.session_state.density}</div><div class="metric-sub">vehicles in frame</div></div>', unsafe_allow_html=True)
 with c2:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-label">Congestion Level</div>
-        <div style="margin-top:8px"><span class="{badge_class}">{congestion}</span></div>
-        <div class="metric-sub" style="margin-top:10px">current status</div>
-    </div>""", unsafe_allow_html=True)
-
+    st.markdown(f'<div class="metric-card"><div class="metric-label">Congestion Level</div><div style="margin-top:8px"><span class="badge badge-{congestion}">{congestion}</span></div><div class="metric-sub" style="margin-top:10px">current status</div></div>', unsafe_allow_html=True)
 with c3:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-label">Processing FPS</div>
-        <div class="metric-value" style="color:#4a9eff">{st.session_state.fps:.1f}</div>
-        <div class="metric-sub">frames / second</div>
-    </div>""", unsafe_allow_html=True)
-
+    st.markdown(f'<div class="metric-card"><div class="metric-label">Processing FPS</div><div class="metric-value" style="color:#4a9eff">{st.session_state.fps:.1f}</div><div class="metric-sub">frames / second</div></div>', unsafe_allow_html=True)
 with c4:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-label">Total Frames</div>
-        <div class="metric-value" style="color:#a78bfa">{st.session_state.frame_count:,}</div>
-        <div class="metric-sub">processed</div>
-    </div>""", unsafe_allow_html=True)
+    st.markdown(f'<div class="metric-card"><div class="metric-label">Total Frames</div><div class="metric-value" style="color:#a78bfa">{st.session_state.frame_count:,}</div><div class="metric-sub">processed</div></div>', unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
 left, right = st.columns([3, 2])
-
 with left:
     st.markdown('<div class="section-title">Live Video Feed</div>', unsafe_allow_html=True)
     if st.session_state.current_frame is not None:
         st.image(st.session_state.current_frame, use_container_width=True)
     else:
-        st.markdown("""
-        <div style="height:300px; background:#050810; border:1px solid #1e2d50;
-             border-radius:12px; display:flex; align-items:center; justify-content:center;
-             color:#2d4a7a; font-family:'Share Tech Mono',monospace; font-size:13px;">
-            Load a video source and press START
-        </div>""", unsafe_allow_html=True)
+        st.markdown('<div style="height:300px;background:#050810;border:1px solid #1e2d50;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#2d4a7a;font-family:monospace;font-size:13px;">Select a video source and press START</div>', unsafe_allow_html=True)
 
 with right:
     st.markdown('<div class="section-title">Density History</div>', unsafe_allow_html=True)
     if st.session_state.history_density:
         import pandas as pd
-        df = pd.DataFrame({"Density": list(st.session_state.history_density)})
-        st.line_chart(df, height=180, use_container_width=True)
+        st.line_chart(pd.DataFrame({"Density": list(st.session_state.history_density)}), height=180)
     else:
         st.caption("No data yet")
 
     st.markdown('<div class="section-title">Vehicle Classes</div>', unsafe_allow_html=True)
     if st.session_state.class_counts:
         import pandas as pd
-        df2 = pd.DataFrame.from_dict(st.session_state.class_counts, orient='index', columns=['Count'])
-        st.bar_chart(df2, height=160, use_container_width=True)
+        st.bar_chart(pd.DataFrame.from_dict(st.session_state.class_counts, orient='index', columns=['Count']), height=160)
     else:
         st.caption("No data yet")
 
@@ -369,12 +318,9 @@ st.markdown("<br>", unsafe_allow_html=True)
 st.markdown('<div class="section-title">Congestion Alerts</div>', unsafe_allow_html=True)
 if st.session_state.alerts:
     for alert in st.session_state.alerts[:5]:
-        st.markdown(f"""
-        <div class="alert-item">
-            [{alert['time']}] {alert['msg']}
-        </div>""", unsafe_allow_html=True)
+        st.markdown(f'<div class="alert-item">[{alert["time"]}] {alert["msg"]}</div>', unsafe_allow_html=True)
 else:
-    st.caption("No alerts - traffic is flowing normally.")
+    st.caption("No alerts - traffic flowing normally.")
 
 if st.session_state.running and not st.session_state.paused:
     time.sleep(0.5)

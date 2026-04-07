@@ -74,10 +74,9 @@ HISTORY_LEN = 60
 # Direct downloadable MP4 files (tested to work with OpenCV)
 SAMPLE_VIDEOS = {
     "-- Select --": "",
-    "Traffic Sample 1": "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
-    "Traffic Sample 2": "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
-    "Traffic Sample 3": "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
-    "Traffic Sample 4": "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4",
+    "Traffic Video 1": "https://www.pexels.com/download/video/854671/",
+    "Traffic Video 2": "https://www.pexels.com/download/video/855564/",
+    "Traffic Video 3": "https://www.pexels.com/download/video/2103099/",
 }
 
 VIDEO_CACHE_DIR = "/tmp/traffic_videos"

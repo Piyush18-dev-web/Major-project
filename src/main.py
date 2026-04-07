@@ -197,10 +197,10 @@ with st.sidebar:
         with st.spinner("Downloading from YouTube... this may take 1-2 min"):
             try:
                 local_path = download_youtube(yt_url)
-                if load_video(local_path):
-                    st.success("Ready! Press Start.")
+                if load_video(stream_url):
+                    st.success("Streaming! Press Start.")
                 else:
-                    st.error("Could not open video after download.")
+                    st.error("Could not open stream.")
             except Exception as e:
                 st.error(f"Failed: {str(e)}")
 

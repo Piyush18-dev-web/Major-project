@@ -79,46 +79,16 @@ HISTORY_LEN = 60
 VIDEO_CACHE_DIR = "/tmp/traffic_videos"
 os.makedirs(VIDEO_CACHE_DIR, exist_ok=True)
 
-# Direct MP4 URLs — no YouTube dependency, works on Streamlit Cloud.
-# These are free, publicly hosted traffic/driving sample videos.
-SAMPLE_URLS = {
-    "-- Select a sample --":  "",
-    "Highway Traffic (USA)":  "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/SubaruOutbackOnStreetAndDirt.mp4",
-    "City Street Drive":      "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
-    "Road Sample 1":          "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
-    "Road Sample 2":          "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
-    "Road Sample 3":          "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4",
-}
-
-def download_video(url: str) -> str:
-    """
-    Download a direct MP4 URL using urllib (stdlib — no extra packages).
-    This replaces the YouTube download approach which fails on Streamlit Cloud
-    with HTTP 403 because YouTube blocks requests from cloud server IPs.
-    Pass any direct .mp4 link and it will be cached locally in VIDEO_CACHE_DIR.
-    """
-    import urllib.request
+def save_uploaded_video(uploaded_file) -> str:
+    """Save an st.file_uploader file to disk and return its path.
+    This is the most reliable video source on Streamlit Cloud —
+    the user uploads from their own machine, no network request needed."""
     import hashlib
-
-    # Use a hash of the URL as the cache filename so the same URL is never
-    # re-downloaded across reruns
-    url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
-    local_path = os.path.join(VIDEO_CACHE_DIR, f"{url_hash}.mp4")
-
-    if os.path.exists(local_path):
-        return local_path
-
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        )
-    }
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=60) as resp, open(local_path, "wb") as f:
-        f.write(resp.read())
-
+    file_hash = hashlib.md5(uploaded_file.name.encode()).hexdigest()[:10]
+    local_path = os.path.join(VIDEO_CACHE_DIR, f"{file_hash}_{uploaded_file.name}")
+    if not os.path.exists(local_path):
+        with open(local_path, "wb") as f:
+            f.write(uploaded_file.read())
     return local_path
 
 def init_state():
@@ -247,23 +217,42 @@ with st.sidebar:
 
     st.markdown('<div class="section-title">Video Source</div>', unsafe_allow_html=True)
 
-    selected = st.selectbox("Quick pick", list(SAMPLE_URLS.keys()))
-    if selected != "-- Select a sample --":
-        video_url = SAMPLE_URLS[selected]
-    else:
-        video_url = st.text_input(
-            "Or paste a direct MP4 URL",
-            placeholder="https://example.com/traffic.mp4"
-        )
-
-    if st.button("Load Video", type="primary", disabled=not video_url):
-        with st.spinner("Downloading video..."):
+    # PRIMARY: File upload — works on Streamlit Cloud with no network requests.
+    # User uploads an MP4 file from their own device.
+    uploaded = st.file_uploader(
+        "Upload a traffic video",
+        type=["mp4", "avi", "mov", "mkv"],
+        help="Upload any MP4/AVI/MOV video from your device"
+    )
+    if uploaded is not None:
+        with st.spinner("Loading video..."):
             try:
-                local_path = download_video(video_url)
+                local_path = save_uploaded_video(uploaded)
                 if load_video(local_path):
                     st.success("Video loaded! Press Start.")
                 else:
                     st.error("Could not open video file.")
+            except Exception as e:
+                st.error(f"Failed: {str(e)}")
+
+    st.markdown("**— or stream directly from URL —**")
+
+    # SECONDARY: Direct URL stream via OpenCV (no download needed).
+    # Works with direct .mp4 links that don't require authentication.
+    # YouTube, Google Drive (403) and similar auth-gated URLs will NOT work.
+    direct_url = st.text_input(
+        "Direct MP4 URL",
+        placeholder="https://example.com/traffic.mp4",
+        help="Must be a direct, publicly accessible .mp4 URL"
+    )
+    if st.button("Stream URL", disabled=not direct_url):
+        with st.spinner("Opening stream..."):
+            try:
+                # OpenCV can open URLs directly — no download required
+                if load_video(direct_url):
+                    st.success("Stream opened! Press Start.")
+                else:
+                    st.error("Could not open URL. Make sure it is a direct, public .mp4 link.")
             except Exception as e:
                 st.error(f"Failed: {str(e)}")
 
@@ -328,7 +317,7 @@ with left:
     if st.session_state.current_frame is not None:
         st.image(st.session_state.current_frame, use_container_width=True)
     else:
-        st.markdown('<div style="height:300px;background:#050810;border:1px solid #1e2d50;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#2d4a7a;font-family:monospace;font-size:13px;">Download a YouTube video and press START</div>', unsafe_allow_html=True)
+        st.markdown('<div style="height:300px;background:#050810;border:1px solid #1e2d50;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#2d4a7a;font-family:monospace;font-size:13px;">Upload a video file or paste a direct MP4 URL, then press START</div>', unsafe_allow_html=True)
 
 with right:
     st.markdown('<div class="section-title">Density History</div>', unsafe_allow_html=True)

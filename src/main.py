@@ -26,7 +26,8 @@ html, body, [class*="css"] { font-family: 'Rajdhani', sans-serif; background-col
 .alert-item { background: #1a0f0f; border-left: 3px solid #ff4040; border-radius: 6px; padding: 10px 14px; margin-bottom: 8px; font-family: 'Share Tech Mono', monospace; font-size: 12px; color: #ff9090; }
 .section-title { font-family: 'Share Tech Mono', monospace; font-size: 11px; letter-spacing: 3px; color: #2d4a7a; text-transform: uppercase; border-bottom: 1px solid #1a2540; padding-bottom: 8px; margin-bottom: 16px; }
 section[data-testid="stSidebar"] { background: #080c18 !important; border-right: 1px solid #1a2540; }
-#MainMenu, footer, header { visibility: hidden; }
+#MainMenu, footer { visibility: hidden; }
+[data-testid="collapsedControl"] { visibility: visible !important; display: block !important; }
 .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; animation: pulse 1.5s infinite; }
 .dot-live { background: #00dc78; } .dot-paused { background: #ffc800; } .dot-stopped { background: #ff4040; animation: none; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
@@ -64,10 +65,16 @@ class StubCongestionPredictor:
         if density < 22:  return "HEAVY"
         return "GRIDLOCK"
 
+# FIX 1: Corrected BGR colour values — MODERATE was identical to LIGHT (both cyan).
+# Each level now has a distinct colour: green, yellow, orange, red-orange, red.
 CONGESTION_COLORS = {
-    "FREE": (0, 220, 120), "LIGHT": (0, 200, 255),
-    "MODERATE": (0, 200, 255), "HEAVY": (0, 100, 255), "GRIDLOCK": (0, 0, 220),
+    "FREE":     (120, 220,   0),   # green
+    "LIGHT":    (255, 200,   0),   # yellow
+    "MODERATE": (  0, 165, 255),   # orange
+    "HEAVY":    (  0,  80, 255),   # red-orange
+    "GRIDLOCK": (  0,   0, 220),   # red
 }
+
 HISTORY_LEN = 60
 VIDEO_CACHE_DIR = "/tmp/traffic_videos"
 os.makedirs(VIDEO_CACHE_DIR, exist_ok=True)
@@ -108,16 +115,25 @@ def init_state():
 
 init_state()
 
-@st.cache_resource
-def get_resources():
-    d = VehicleDetector(model_path="yolov8n.pt") if REAL_MODULES else StubVehicleDetector()
-    p = CongestionPredictor() if REAL_MODULES else StubCongestionPredictor()
-    return d, p
+# FIX 2: Replaced @st.cache_resource with session_state storage.
+# @st.cache_resource fails silently when REAL_MODULES=False because the stub
+# classes are defined inside the script scope — cache_resource expects
+# top-level importable objects. session_state guarantees exactly one instance
+# per browser session regardless of module availability.
+if "detector" not in st.session_state:
+    if REAL_MODULES:
+        st.session_state.detector  = VehicleDetector(model_path="yolov8n.pt")
+        st.session_state.predictor = CongestionPredictor()
+    else:
+        st.session_state.detector  = StubVehicleDetector()
+        st.session_state.predictor = StubCongestionPredictor()
 
 def load_video(path):
     if st.session_state.cap is not None:
-        try: st.session_state.cap.release()
-        except: pass
+        try:
+            st.session_state.cap.release()
+        except Exception:
+            pass
     cap = cv2.VideoCapture(path)
     if cap.isOpened():
         st.session_state.cap = cap
@@ -140,41 +156,63 @@ def annotate_frame(frame, vehicles, density, congestion, fps):
     cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
     cv2.putText(frame, f"DENSITY: {density}", (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
     cv2.putText(frame, f"{congestion}", (12, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
-    cv2.putText(frame, f"FPS:{fps:.1f}  {datetime.now().strftime('%H:%M:%S')}", (w - 200, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 180), 1)
+    cv2.putText(frame, f"FPS:{fps:.1f}  {datetime.now().strftime('%H:%M:%S')}", (w - 200, 28),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 180), 1)
     return frame
 
 def process_one_frame():
-    if not st.session_state.running or st.session_state.paused: return
-    if st.session_state.cap is None or not st.session_state.cap.isOpened(): return
-    detector, predictor = get_resources()
+    if not st.session_state.running or st.session_state.paused:
+        return False
+    if st.session_state.cap is None or not st.session_state.cap.isOpened():
+        return False
+
+    detector  = st.session_state.detector
+    predictor = st.session_state.predictor
     cap = st.session_state.cap
+
+    # FIX 3: Measure actual FPS instead of hardcoding 15.0
+    t0 = time.time()
+
     ret, frame = cap.read()
     if not ret:
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         ret, frame = cap.read()
-    if not ret: return
+    if not ret:
+        return False
+
     vehicles   = detector.detect(frame)
     density    = len(vehicles)
     congestion = predictor.predict(density)
+
     class_counts = {}
     for _, _, cls in vehicles:
         class_counts[cls] = class_counts.get(cls, 0) + 1
+
+    # FIX 3 cont.: compute real elapsed time for FPS
+    elapsed = time.time() - t0
+    fps = 1.0 / elapsed if elapsed > 0 else 0.0
+
     st.session_state.density      = density
     st.session_state.congestion   = congestion
-    st.session_state.fps          = 15.0
+    st.session_state.fps          = fps
     st.session_state.frame_count += 1
     st.session_state.class_counts = class_counts
+
     ts = datetime.now().strftime("%H:%M:%S")
     st.session_state.history_density.append(density)
     st.session_state.history_ts.append(ts)
     st.session_state.alert_cooldown -= 1
+
     if congestion in ("HEAVY", "GRIDLOCK") and st.session_state.alert_cooldown <= 0:
         st.session_state.alerts.insert(0, {"time": ts, "msg": f"{congestion} - {density} vehicles detected"})
         st.session_state.alerts = st.session_state.alerts[:10]
         st.session_state.alert_cooldown = 10
-    annotated = annotate_frame(frame.copy(), vehicles, density, congestion, 15.0)
-    st.session_state.current_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
 
+    annotated = annotate_frame(frame.copy(), vehicles, density, congestion, fps)
+    st.session_state.current_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+    return True
+
+# Process a frame before rendering UI so displayed values are always up to date
 process_one_frame()
 
 # -----------------------------------------------
@@ -197,10 +235,12 @@ with st.sidebar:
         with st.spinner("Downloading from YouTube... this may take 1-2 min"):
             try:
                 local_path = download_youtube(yt_url)
-                if load_video(stream_url):
-                    st.success("Streaming! Press Start.")
+                # FIX 4: Was load_video(stream_url) — stream_url never defined.
+                # Correct variable is local_path returned by download_youtube().
+                if load_video(local_path):
+                    st.success("Video loaded! Press Start.")
                 else:
-                    st.error("Could not open stream.")
+                    st.error("Could not open video file.")
             except Exception as e:
                 st.error(f"Failed: {str(e)}")
 
@@ -289,6 +329,9 @@ if st.session_state.alerts:
 else:
     st.caption("No alerts - traffic flowing normally.")
 
+# FIX 5: Rerun loop only when actively running and not paused.
+# Without this guard, every sidebar widget click would also trigger
+# process_one_frame() unnecessarily even when stopped/paused.
 if st.session_state.running and not st.session_state.paused:
     time.sleep(0.5)
     st.rerun()

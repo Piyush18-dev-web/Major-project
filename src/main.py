@@ -79,24 +79,46 @@ HISTORY_LEN = 60
 VIDEO_CACHE_DIR = "/tmp/traffic_videos"
 os.makedirs(VIDEO_CACHE_DIR, exist_ok=True)
 
+# Direct MP4 URLs — no YouTube dependency, works on Streamlit Cloud.
+# These are free, publicly hosted traffic/driving sample videos.
 SAMPLE_URLS = {
-    "-- Select a sample --": "",
-    "NYC Times Square":      "https://www.youtube.com/watch?v=gSu_Y5OEofc",
-    "Tokyo Highway":         "https://www.youtube.com/watch?v=MNn9qKG2UFI",
-    "India Street Traffic":  "https://www.youtube.com/watch?v=wqctLW0Hb7s",
-    "Highway Cam USA":       "https://www.youtube.com/watch?v=1EiC9bvVGnk",
+    "-- Select a sample --":  "",
+    "Highway Traffic (USA)":  "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/SubaruOutbackOnStreetAndDirt.mp4",
+    "City Street Drive":      "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
+    "Road Sample 1":          "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
+    "Road Sample 2":          "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
+    "Road Sample 3":          "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4",
 }
 
-def download_youtube(url: str) -> str:
-    from pytubefix import YouTube
-    yt = YouTube(url)
-    stream = yt.streams.filter(progressive=True, file_extension="mp4").order_by("resolution").first()
-    if not stream:
-        stream = yt.streams.filter(file_extension="mp4").order_by("resolution").first()
-    vid_id = yt.video_id
-    local_path = os.path.join(VIDEO_CACHE_DIR, f"{vid_id}.mp4")
-    if not os.path.exists(local_path):
-        stream.download(output_path=VIDEO_CACHE_DIR, filename=f"{vid_id}.mp4")
+def download_video(url: str) -> str:
+    """
+    Download a direct MP4 URL using urllib (stdlib — no extra packages).
+    This replaces the YouTube download approach which fails on Streamlit Cloud
+    with HTTP 403 because YouTube blocks requests from cloud server IPs.
+    Pass any direct .mp4 link and it will be cached locally in VIDEO_CACHE_DIR.
+    """
+    import urllib.request
+    import hashlib
+
+    # Use a hash of the URL as the cache filename so the same URL is never
+    # re-downloaded across reruns
+    url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+    local_path = os.path.join(VIDEO_CACHE_DIR, f"{url_hash}.mp4")
+
+    if os.path.exists(local_path):
+        return local_path
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        )
+    }
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=60) as resp, open(local_path, "wb") as f:
+        f.write(resp.read())
+
     return local_path
 
 def init_state():
@@ -223,20 +245,21 @@ with st.sidebar:
     st.markdown(f"*{'REAL' if REAL_MODULES else 'DEMO'} mode*")
     st.divider()
 
-    st.markdown('<div class="section-title">YouTube Video Source</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Video Source</div>', unsafe_allow_html=True)
 
     selected = st.selectbox("Quick pick", list(SAMPLE_URLS.keys()))
     if selected != "-- Select a sample --":
-        yt_url = SAMPLE_URLS[selected]
+        video_url = SAMPLE_URLS[selected]
     else:
-        yt_url = st.text_input("Or paste YouTube URL", placeholder="https://www.youtube.com/watch?v=...")
+        video_url = st.text_input(
+            "Or paste a direct MP4 URL",
+            placeholder="https://example.com/traffic.mp4"
+        )
 
-    if st.button("Download & Load", type="primary", disabled=not yt_url):
-        with st.spinner("Downloading from YouTube... this may take 1-2 min"):
+    if st.button("Load Video", type="primary", disabled=not video_url):
+        with st.spinner("Downloading video..."):
             try:
-                local_path = download_youtube(yt_url)
-                # FIX 4: Was load_video(stream_url) — stream_url never defined.
-                # Correct variable is local_path returned by download_youtube().
+                local_path = download_video(video_url)
                 if load_video(local_path):
                     st.success("Video loaded! Press Start.")
                 else:
